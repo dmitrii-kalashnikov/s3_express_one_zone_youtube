@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack to create S3 Express One zone buckets in specific AZ with specific IAM role and policies to allow access to the S3 Buckets.
+
+Parameters:
+  AvailabilityZone:
+    Description: "The availability zone to be used across all resources"
+    Type: String
+    Default: "az1"
+
+  ExpressBucketPrefix:
+    Description: "Prefix for the Express One zone S3 bucket name"
+    Type: String
+    Default: "Express"
+
+Mappings:
+  RegionMap:
+    us-east-1: #N.Virginia
+      ShortName: "use1"
+      AvailabilityZones:
+        - "use1-az4"
+        - "use1-az5"
+        - "use1-az6"
+    us-west-2: #Oregon
+      ShortName: "usw2"
+      AvailabilityZones:
+        - "usw2-az1"
+        - "usw2-az3"
+        - "usw2-az4"
+    ap-northeast-1: #Tokyo
+      ShortName: "apne1"
+      AvailabilityZones:
+        - "apne1-az1"
+        - "apne1-az4"
+    eu-north-1: #Stockholm
+      ShortName: "eun1"
+      AvailabilityZones:
+        - "eun1-az1"
+        - "eun1-az2"
+        - "eun1-az3"
+
+Resources:
+
+  OneZoneS3Bucketspeed:
+    Type: 'AWS::S3Express::DirectoryBucket'
+    Properties:
+      BucketName: !Sub 
+        - "${ExpressBucketPrefix}-onezone-bucket--${RegionShortName}-${AvailabilityZone}--x-s3"
+        - { RegionShortName: !FindInMap [RegionMap, !Ref AWS::Region, ShortName], AvailabilityZone: !Ref AvailabilityZone }
+      DataRedundancy: 'SingleAvailabilityZone'
+      LocationName: !Sub 
+        - "${RegionShortName}-${AvailabilityZone}"
+        - { RegionShortName: !FindInMap [RegionMap, !Ref AWS::Region, ShortName], AvailabilityZone: !Ref AvailabilityZone }
+  
+  OneZoneBucketPolicy:
+    Type: 'AWS::S3Express::BucketPolicy'
+    Properties:
+      Bucket: !Ref OneZoneS3Bucketspeed
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'ReadWriteAccess'
+            Effect: 'Allow'
+            Principal:
+              AWS:
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - 's3express:*'
+            Resource: !Sub 
+              - 'arn:aws:s3express:${AWS::Region}:${AWS::AccountId}:bucket/${ExpressBucketPrefix}-onezone-bucket--${ShortName}-${AvailabilityZone}--x-s3'
+              - ShortName: !FindInMap [RegionMap, !Ref AWS::Region, ShortName]
+                AZ1: !Ref AvailabilityZone
+
+  InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  InstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ec2.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'SpecificS3ExpressAccess'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action: 's3express:*'
+                Resource:
+                  - !Sub 'arn:aws:s3express:${AWS::Region}:${AWS::AccountId}:bucket/${OneZoneS3Bucketspeed}'
+                  - !Sub 'arn:aws:s3express:${AWS::Region}:${AWS::AccountId}:bucket/${OneZoneS3Bucketspeed}/*'
+
+Outputs:
+
+  OneZoneBucketName:
+    Value: !Ref OneZoneS3Bucketspeed
+    Description: Name of the One Zone S3 bucket

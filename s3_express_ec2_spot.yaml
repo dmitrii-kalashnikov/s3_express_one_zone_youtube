@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack to create two S3 buckets (S3 Express One zone and S3 standart) and a Spot Instance with specific IAM role and policies to allow access to the S3 Buckets.
+
+Parameters:
+  AvailabilityZone:
+    Description: "The availability zone to be used across all resources"
+    Type: String
+    Default: "az1"
+
+  InstanceType:
+    Description: "EC2 instance type"
+    Type: String
+    Default: "r6in.large"
+
+  ImageId:
+    Description: "AMI ID for the instance"
+    Type: String
+
+  KeyName:
+    Description: "EC2 Key Pair Name"
+    Type: String
+
+  StandardBucketPrefix:
+    Description: "Prefix for the standard S3 bucket name"
+    Type: String
+    Default: "standard"
+
+  ExpressBucketPrefix:
+    Description: "Prefix for the Express One zone S3 bucket name"
+    Type: String
+    Default: "Express"
+
+  SubnetId:
+    Description: "Subnet ID for the EC2 Instance put SubnetID of your S3 Express for better perfomance"
+    Type: AWS::EC2::Subnet::Id
+
+Mappings:
+  RegionMap:
+    us-east-1: #N.Virginia
+      ShortName: "use1"
+      AvailabilityZones:
+        - "use1-az4"
+        - "use1-az5"
+        - "use1-az6"
+    us-west-2: #Oregon
+      ShortName: "usw2"
+      AvailabilityZones:
+        - "usw2-az1"
+        - "usw2-az3"
+        - "usw2-az4"
+    ap-northeast-1: #Tokyo
+      ShortName: "apne1"
+      AvailabilityZones:
+        - "apne1-az1"
+        - "apne1-az4"
+    eu-north-1: #Stockholm
+      ShortName: "eun1"
+      AvailabilityZones:
+        - "eun1-az1"
+        - "eun1-az2"
+        - "eun1-az3"
+
+Resources:
+  StandardS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${StandardBucketPrefix}-${AWS::Region}-${AWS::StackName}-${AWS::AccountId}'
+
+  OneZoneS3Bucketspeed:
+    Type: 'AWS::S3Express::DirectoryBucket'
+    Properties:
+      BucketName: !Sub 
+        - "${ExpressBucketPrefix}-onezone-bucket--${RegionShortName}-${AvailabilityZone}--x-s3"
+        - { RegionShortName: !FindInMap [RegionMap, !Ref AWS::Region, ShortName], AvailabilityZone: !Ref AvailabilityZone }
+      DataRedundancy: 'SingleAvailabilityZone'
+      LocationName: !Sub 
+        - "${RegionShortName}-${AvailabilityZone}"
+        - { RegionShortName: !FindInMap [RegionMap, !Ref AWS::Region, ShortName], AvailabilityZone: !Ref AvailabilityZone }
+  
+  OneZoneBucketPolicy:
+    Type: 'AWS::S3Express::BucketPolicy'
+    Properties:
+      Bucket: !Ref OneZoneS3Bucketspeed
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'ReadWriteAccess'
+            Effect: 'Allow'
+            Principal:
+              AWS:
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - 's3express:*'
+            Resource: !Sub 
+              - 'arn:aws:s3express:${AWS::Region}:${AWS::AccountId}:bucket/${ExpressBucketPrefix}-onezone-bucket--${ShortName}-${AvailabilityZone}--x-s3'
+              - ShortName: !FindInMap [RegionMap, !Ref AWS::Region, ShortName]
+                AZ1: !Ref AvailabilityZone
+
+  InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  InstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ec2.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'AccessS3BucketsPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 's3:*'
+                Resource:
+                  - !GetAtt StandardS3Bucket.Arn
+                  - !Sub 'arn:aws:s3:::${StandardS3Bucket}/*'
+        - PolicyName: 'SpecificS3ExpressAccess'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action: 's3express:*'
+                Resource:
+                  - !Sub 'arn:aws:s3express:${AWS::Region}:${AWS::AccountId}:bucket/${OneZoneS3Bucketspeed}'
+                  - !Sub 'arn:aws:s3express:${AWS::Region}:${AWS::AccountId}:bucket/${OneZoneS3Bucketspeed}/*'
+
+  SpotLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: MySpotLaunchTemplate
+      LaunchTemplateData:
+        ImageId: !Ref ImageId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        BlockDeviceMappings:
+          - DeviceName: "/dev/xvda"
+            Ebs:
+              VolumeSize: 30
+              VolumeType: "gp2"
+              DeleteOnTermination: true
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            SubnetId: !Ref SubnetId
+            AssociatePublicIpAddress: true
+        InstanceMarketOptions:
+          MarketType: "spot"
+          SpotOptions:
+            SpotInstanceType: "one-time"
+            InstanceInterruptionBehavior: "terminate" 
+  
+  SpotInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref SpotLaunchTemplate
+        Version: !GetAtt SpotLaunchTemplate.LatestVersionNumber
+
+Outputs:
+  StandardBucketName:
+    Value: !Ref StandardS3Bucket
+    Description: Name of the Standard S3 bucket
+
+  OneZoneBucketName:
+    Value: !Ref OneZoneS3Bucketspeed
+    Description: Name of the One Zone S3 bucket
